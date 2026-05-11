@@ -1,0 +1,91 @@
+name: Direct Downloader
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: "Direct download URL"
+        required: true
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Prepare folders
+        run: |
+          mkdir -p downloads
+          mkdir -p dl
+
+      - name: Download file safely
+        shell: bash
+        run: |
+          URL="${{ github.event.inputs.url }}"
+
+          FILENAME=$(basename "$URL" | cut -d'?' -f1)
+
+          echo "Downloading: $FILENAME"
+
+          aria2c \
+            --dir=downloads \
+            --out="$FILENAME" \
+            --split=16 \
+            --min-split-size=1M \
+            --max-tries=10 \
+            --retry-wait=5 \
+            --continue=true \
+            --auto-file-renaming=false \
+            --allow-overwrite=true \
+            --timeout=60 \
+            --lowest-speed-limit=1K \
+            --summary-interval=0 \
+            "$URL"
+
+          FILESIZE=$(stat -c%s "downloads/$FILENAME")
+
+          echo "Downloaded size: $FILESIZE"
+
+          if [ "$FILESIZE" -lt 1000000 ]; then
+            echo "ERROR: File seems broken."
+            exit 1
+          fi
+
+      - name: Split large files
+        shell: bash
+        run: |
+          FILE=$(find downloads -type f | head -n 1)
+
+          BASENAME=$(basename "$FILE")
+
+          split -b 95M -d "$FILE" "dl/${BASENAME}.part"
+
+      - name: Generate links page
+        shell: bash
+        run: |
+          echo "# Download Links" > LINKS.md
+          echo "" >> LINKS.md
+
+          for FILE in dl/*; do
+            NAME=$(basename "$FILE")
+
+            echo "- [$NAME](https://github.com/${{ github.repository }}/raw/main/dl/$NAME)" >> LINKS.md
+          done
+
+      - name: Push files
+        shell: bash
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+
+          git add dl/*
+          git add LINKS.md
+
+          git commit -m "Add downloaded file" || echo "Nothing to commit"
+
+          git push
