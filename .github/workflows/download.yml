@@ -1,10 +1,10 @@
-name: Direct Downloader
+name: Downloader
 
 on:
   workflow_dispatch:
     inputs:
       url:
-        description: "Direct download URL"
+        description: "Direct URL"
         required: true
 
 jobs:
@@ -15,22 +15,31 @@ jobs:
       contents: write
 
     steps:
-      - name: Checkout repo
+      - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Install 7zip
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y p7zip-full aria2
 
       - name: Prepare folders
         run: |
           mkdir -p downloads
           mkdir -p dl
 
-      - name: Download file safely
+      - name: Download file
         shell: bash
         run: |
           URL="${{ github.event.inputs.url }}"
 
           FILENAME=$(basename "$URL" | cut -d'?' -f1)
 
-          echo "Downloading: $FILENAME"
+          if [ -z "$FILENAME" ]; then
+            FILENAME="downloaded_file.bin"
+          fi
+
+          echo "Downloading $FILENAME"
 
           aria2c \
             --dir=downloads \
@@ -40,32 +49,46 @@ jobs:
             --max-tries=10 \
             --retry-wait=5 \
             --continue=true \
-            --auto-file-renaming=false \
-            --allow-overwrite=true \
             --timeout=60 \
             --lowest-speed-limit=1K \
-            --summary-interval=0 \
+            --auto-file-renaming=false \
+            --allow-overwrite=true \
             "$URL"
 
-          FILESIZE=$(stat -c%s "downloads/$FILENAME")
+          echo "=== FILE INFO ==="
 
-          echo "Downloaded size: $FILESIZE"
+          ls -lh downloads/
 
-          if [ "$FILESIZE" -lt 1000000 ]; then
-            echo "ERROR: File seems broken."
+          FILEPATH="downloads/$FILENAME"
+
+          FILETYPE=$(file "$FILEPATH")
+
+          echo "$FILETYPE"
+
+          if echo "$FILETYPE" | grep -qiE "HTML|text"; then
+            echo "ERROR: Downloaded HTML page instead of file"
             exit 1
           fi
 
-      - name: Split large files
+          FILESIZE=$(stat -c%s "$FILEPATH")
+
+          echo "SIZE=$FILESIZE"
+
+          if [ "$FILESIZE" -lt 50000000 ]; then
+            echo "ERROR: File too small"
+            exit 1
+          fi
+
+      - name: Split file
         shell: bash
         run: |
           FILE=$(find downloads -type f | head -n 1)
 
           BASENAME=$(basename "$FILE")
 
-          split -b 95M -d "$FILE" "dl/${BASENAME}.part"
+          7z a -tzip -v95m "dl/${BASENAME}.zip" "$FILE"
 
-      - name: Generate links page
+      - name: Create links page
         shell: bash
         run: |
           echo "# Download Links" > LINKS.md
@@ -86,6 +109,6 @@ jobs:
           git add dl/*
           git add LINKS.md
 
-          git commit -m "Add downloaded file" || echo "Nothing to commit"
+          git commit -m "Add files" || echo "nothing to commit"
 
           git push
